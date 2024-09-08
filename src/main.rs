@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex};
@@ -18,8 +18,28 @@ struct Table {
     rows: Vec<Vec<String>>,
 }
 
+struct BTreeIndex {
+    tree: BTreeMap<String, Vec<usize>>,
+}
+
+impl BTreeIndex {
+    fn new() -> Self {
+        BTreeIndex {
+            tree: BTreeMap::new(),
+        }
+    }
+
+    fn insert(&mut self, key: String, row_index: usize) {
+        self.tree
+            .entry(key)
+            .or_insert_with(Vec::new)
+            .push(row_index);
+    }
+}
+
 struct Database {
     tables: HashMap<String, Table>,
+    indexes: HashMap<String, BTreeIndex>,
     file_path: String,
 }
 
@@ -27,6 +47,7 @@ impl Database {
     fn new(file_path: &str) -> Self {
         let mut db = Database {
             tables: HashMap::new(),
+            indexes: HashMap::new(),
             file_path: file_path.to_string(),
         };
         db.load_from_file();
@@ -42,7 +63,9 @@ impl Database {
                 if let Ok(line) = line {
                     if line.starts_with("TABLE:") {
                         if let Some(table) = current_table.take() {
-                            self.tables.insert(table.name.clone(), table);
+                            let table_name = table.name.clone();
+                            self.tables.insert(table_name.clone(), table.clone());
+                            self.indexes.insert(table_name, BTreeIndex::new());
                         }
                         let parts: Vec<&str> = line.split(':').collect();
                         current_table = Some(Table {
@@ -69,7 +92,9 @@ impl Database {
             }
 
             if let Some(table) = current_table.take() {
-                self.tables.insert(table.name.clone(), table);
+                let table_name = table.name.clone();
+                self.tables.insert(table_name.clone(), table.clone());
+                self.indexes.insert(table_name, BTreeIndex::new());
             }
         }
     }
@@ -97,7 +122,9 @@ impl Database {
         if self.tables.contains_key(&table.name) {
             return Err(format!("Table '{}' already exists", table.name));
         }
-        self.tables.insert(table.name.clone(), table);
+        let table_name = table.name.clone();
+        self.tables.insert(table_name.clone(), table.clone());
+        self.indexes.insert(table_name, BTreeIndex::new());
         self.save_to_file();
         Ok(())
     }
@@ -107,7 +134,16 @@ impl Database {
             if values.len() != table.columns.len() {
                 return Err("Number of values doesn't match number of columns".to_string());
             }
-            table.rows.push(values);
+            let row_index = table.rows.len();
+            table.rows.push(values.clone());
+
+            if let Some(index) = self.indexes.get_mut(table_name) {
+                for (i, value) in values.iter().enumerate() {
+                    let key = format!("{}:{}", table.columns[i].name, value);
+                    index.insert(key, row_index);
+                }
+            }
+
             self.save_to_file();
             Ok(())
         } else {
@@ -115,24 +151,83 @@ impl Database {
         }
     }
 
-    fn select(&self, table_name: &str, columns: Vec<String>) -> Result<Vec<Vec<String>>, String> {
+    fn select(
+        &self,
+        table_name: &str,
+        columns: Vec<String>,
+        where_clause: Option<&str>,
+    ) -> Result<Vec<Vec<String>>, String> {
         if let Some(table) = self.tables.get(table_name) {
-            let column_indices: Vec<usize> = columns
-                .iter()
-                .map(|col| table.columns.iter().position(|c| c.name == *col))
-                .collect::<Option<Vec<usize>>>()
-                .ok_or_else(|| "One or more columns not found".to_string())?;
+            let column_indices: Vec<usize> = if columns.len() == 1 && columns[0] == "*" {
+                (0..table.columns.len()).collect()
+            } else {
+                columns
+                    .iter()
+                    .map(|col| table.columns.iter().position(|c| c.name == *col))
+                    .collect::<Option<Vec<usize>>>()
+                    .ok_or_else(|| "One or more columns not found".to_string())?
+            };
 
             let mut result = Vec::new();
-            result.push(columns.clone());
+            let header: Vec<String> = column_indices
+                .iter()
+                .map(|&i| table.columns[i].name.clone())
+                .collect();
+            result.push(header);
 
-            for row in &table.rows {
+            let rows_to_process = if let Some(where_clause) = where_clause {
+                self.apply_where_clause(table_name, where_clause)?
+            } else {
+                (0..table.rows.len()).collect()
+            };
+
+            for row_index in rows_to_process {
+                let row = &table.rows[row_index];
                 let selected_values: Vec<String> =
                     column_indices.iter().map(|&i| row[i].clone()).collect();
                 result.push(selected_values);
             }
 
             Ok(result)
+        } else {
+            Err(format!("Table '{}' not found", table_name))
+        }
+    }
+
+    fn apply_where_clause(
+        &self,
+        table_name: &str,
+        where_clause: &str,
+    ) -> Result<Vec<usize>, String> {
+        let parts: Vec<&str> = where_clause.split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err("Invalid WHERE clause syntax".to_string());
+        }
+
+        let column = parts[0];
+        let operator = parts[1];
+        let value = parts[2];
+
+        if let Some(table) = self.tables.get(table_name) {
+            let column_index = table
+                .columns
+                .iter()
+                .position(|c| c.name == column)
+                .ok_or_else(|| format!("Column '{}' not found", column))?;
+
+            match operator {
+                "=" => {
+                    let mut result = Vec::new();
+                    for (i, row) in table.rows.iter().enumerate() {
+                        if row[column_index] == value {
+                            result.push(i);
+                        }
+                    }
+                    Ok(result)
+                }
+                // Add support for other operators like >, <, >=, <= if needed
+                _ => Err(format!("Unsupported operator: {}", operator)),
+            }
         } else {
             Err(format!("Table '{}' not found", table_name))
         }
@@ -199,15 +294,29 @@ fn process_query(query: &str, db: &Arc<Mutex<Database>>) -> String {
             }
         }
         "SELECT" => {
-            if parts.len() < 4 || parts[parts.len() - 2].to_uppercase() != "FROM" {
+            if parts.len() < 4 || !parts.contains(&"FROM") {
                 return "Invalid SELECT syntax\n".to_string();
             }
-            let table_name = parts[parts.len() - 1];
-            let columns: Vec<String> = parts[1..parts.len() - 2]
+            let from_position = parts
                 .iter()
-                .map(|s| s.to_string())
-                .collect();
-            match db.select(table_name, columns) {
+                .position(|&p| p.to_uppercase() == "FROM")
+                .unwrap();
+            let table_name = parts[from_position + 1];
+            let where_position = parts.iter().position(|&p| p.to_uppercase() == "WHERE");
+
+            let columns: Vec<String> = if parts[1] == "*" {
+                vec!["*".to_string()]
+            } else {
+                parts[1..from_position]
+                    .iter()
+                    .filter(|&&c| c != ",")
+                    .map(|&s| s.to_string())
+                    .collect()
+            };
+
+            let where_clause = where_position.map(|pos| parts[pos + 1..].join(" "));
+
+            match db.select(table_name, columns, where_clause.as_deref()) {
                 Ok(results) => {
                     let mut response = String::new();
                     for row in results {
@@ -222,6 +331,9 @@ fn process_query(query: &str, db: &Arc<Mutex<Database>>) -> String {
         _ => "Invalid query\n".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -238,4 +350,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handle_client(stream, db_clone).await;
         });
     }
+}
+
+#[cfg(test)]
+pub fn start_test_server(db_file: &str) -> std::io::Result<()> {
+    use tokio::runtime::Runtime;
+
+    let rt = Runtime::new()?;
+    rt.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:8080").await?;
+        println!("Test server listening on 127.0.0.1:8080");
+
+        let db = Arc::new(Mutex::new(Database::new(db_file)));
+
+        loop {
+            let (stream, _) = listener.accept().await?;
+            let db_clone = Arc::clone(&db);
+
+            tokio::spawn(async move {
+                handle_client(stream, db_clone).await;
+            });
+        }
+    })
 }
