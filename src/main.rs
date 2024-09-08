@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -41,6 +42,9 @@ struct Database {
     tables: HashMap<String, Table>,
     indexes: HashMap<String, BTreeIndex>,
     file_path: String,
+    dirty: bool,
+    last_save: Instant,
+    max_dirty_duration: Duration,
 }
 
 impl Database {
@@ -49,6 +53,9 @@ impl Database {
             tables: HashMap::new(),
             indexes: HashMap::new(),
             file_path: file_path.to_string(),
+            dirty: false,
+            last_save: Instant::now(),
+            max_dirty_duration: Duration::from_secs(5), // Save at most every 5 seconds
         };
         db.load_from_file();
         db
@@ -144,7 +151,8 @@ impl Database {
                 }
             }
 
-            self.save_to_file();
+            self.dirty = true;
+            self.save_if_needed();
             Ok(())
         } else {
             Err(format!("Table '{}' not found", table_name))
@@ -230,6 +238,14 @@ impl Database {
             }
         } else {
             Err(format!("Table '{}' not found", table_name))
+        }
+    }
+
+    fn save_if_needed(&mut self) {
+        if self.dirty && self.last_save.elapsed() >= self.max_dirty_duration {
+            self.save_to_file();
+            self.dirty = false;
+            self.last_save = Instant::now();
         }
     }
 }

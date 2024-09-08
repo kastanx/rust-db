@@ -118,19 +118,19 @@ fn test_performance() {
     send_query("CREATE TABLE large_data id INTEGER value STRING");
 
     let start_time = Instant::now();
-    for i in 0..1000 {
+    for i in 0..10000 {
         send_query(&format!("INSERT INTO large_data VALUES {} value_{}", i, i));
     }
     let insert_duration = start_time.elapsed();
-    println!("Time to insert 1000 rows: {:?}", insert_duration);
+    println!("Time to insert 10000 rows: {:?}", insert_duration);
 
     let start_time = Instant::now();
     let _large_select_response = send_query("SELECT * FROM large_data");
     let select_all_duration = start_time.elapsed();
-    println!("Time to select 1000 rows: {:?}", select_all_duration);
+    println!("Time to select 10000 rows: {:?}", select_all_duration);
 
     let start_time = Instant::now();
-    let _where_response = send_query("SELECT * FROM large_data WHERE id = 1000");
+    let _where_response = send_query("SELECT * FROM large_data WHERE id = 10000");
     let select_where_duration = start_time.elapsed();
     println!(
         "Time to select one row with WHERE clause: {:?}",
