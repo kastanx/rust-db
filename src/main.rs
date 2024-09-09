@@ -1,24 +1,26 @@
+use bincode::{deserialize_from, serialize_into};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Column {
     name: String,
     data_type: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Table {
     name: String,
     columns: Vec<Column>,
     rows: Vec<Vec<String>>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct BTreeIndex {
     tree: BTreeMap<String, Vec<usize>>,
 }
@@ -38,9 +40,14 @@ impl BTreeIndex {
     }
 }
 
-struct Database {
+#[derive(Serialize, Deserialize)]
+struct DatabaseState {
     tables: HashMap<String, Table>,
     indexes: HashMap<String, BTreeIndex>,
+}
+
+struct Database {
+    state: DatabaseState,
     file_path: String,
     dirty: bool,
     last_save: Instant,
@@ -50,12 +57,14 @@ struct Database {
 impl Database {
     fn new(file_path: &str) -> Self {
         let mut db = Database {
-            tables: HashMap::new(),
-            indexes: HashMap::new(),
+            state: DatabaseState {
+                tables: HashMap::new(),
+                indexes: HashMap::new(),
+            },
             file_path: file_path.to_string(),
             dirty: false,
             last_save: Instant::now(),
-            max_dirty_duration: Duration::from_secs(5), // Save at most every 5 seconds
+            max_dirty_duration: Duration::from_secs(5),
         };
         db.load_from_file();
         db
@@ -63,88 +72,46 @@ impl Database {
 
     fn load_from_file(&mut self) {
         if let Ok(file) = File::open(&self.file_path) {
-            let reader = BufReader::new(file);
-            let mut current_table: Option<Table> = None;
-
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if line.starts_with("TABLE:") {
-                        if let Some(table) = current_table.take() {
-                            let table_name = table.name.clone();
-                            self.tables.insert(table_name.clone(), table.clone());
-                            self.indexes.insert(table_name, BTreeIndex::new());
-                        }
-                        let parts: Vec<&str> = line.split(':').collect();
-                        current_table = Some(Table {
-                            name: parts[1].to_string(),
-                            columns: Vec::new(),
-                            rows: Vec::new(),
-                        });
-                    } else if line.starts_with("COLUMN:") {
-                        let parts: Vec<&str> = line.split(':').collect();
-                        if let Some(table) = current_table.as_mut() {
-                            table.columns.push(Column {
-                                name: parts[1].to_string(),
-                                data_type: parts[2].to_string(),
-                            });
-                        }
-                    } else if line.starts_with("ROW:") {
-                        let parts: Vec<&str> = line.split(':').collect();
-                        let values: Vec<String> = parts[1].split(',').map(String::from).collect();
-                        if let Some(table) = current_table.as_mut() {
-                            table.rows.push(values);
-                        }
-                    }
-                }
-            }
-
-            if let Some(table) = current_table.take() {
-                let table_name = table.name.clone();
-                self.tables.insert(table_name.clone(), table.clone());
-                self.indexes.insert(table_name, BTreeIndex::new());
+            match deserialize_from(file) {
+                Ok(state) => self.state = state,
+                Err(e) => eprintln!("Error loading database: {}", e),
             }
         }
     }
 
     fn save_to_file(&self) {
-        if let Ok(mut file) = OpenOptions::new()
+        if let Ok(file) = OpenOptions::new()
             .write(true)
             .truncate(true)
             .create(true)
             .open(&self.file_path)
         {
-            for (_, table) in &self.tables {
-                writeln!(file, "TABLE:{}", table.name).unwrap();
-                for column in &table.columns {
-                    writeln!(file, "COLUMN:{}:{}", column.name, column.data_type).unwrap();
-                }
-                for row in &table.rows {
-                    writeln!(file, "ROW:{}", row.join(",")).unwrap();
-                }
+            if let Err(e) = serialize_into(file, &self.state) {
+                eprintln!("Error saving database: {}", e);
             }
         }
     }
 
     fn create_table(&mut self, table: Table) -> Result<(), String> {
-        if self.tables.contains_key(&table.name) {
+        if self.state.tables.contains_key(&table.name) {
             return Err(format!("Table '{}' already exists", table.name));
         }
         let table_name = table.name.clone();
-        self.tables.insert(table_name.clone(), table.clone());
-        self.indexes.insert(table_name, BTreeIndex::new());
+        self.state.tables.insert(table_name.clone(), table.clone());
+        self.state.indexes.insert(table_name, BTreeIndex::new());
         self.save_to_file();
         Ok(())
     }
 
     fn insert(&mut self, table_name: &str, values: Vec<String>) -> Result<(), String> {
-        if let Some(table) = self.tables.get_mut(table_name) {
+        if let Some(table) = self.state.tables.get_mut(table_name) {
             if values.len() != table.columns.len() {
                 return Err("Number of values doesn't match number of columns".to_string());
             }
             let row_index = table.rows.len();
             table.rows.push(values.clone());
 
-            if let Some(index) = self.indexes.get_mut(table_name) {
+            if let Some(index) = self.state.indexes.get_mut(table_name) {
                 for (i, value) in values.iter().enumerate() {
                     let key = format!("{}:{}", table.columns[i].name, value);
                     index.insert(key, row_index);
@@ -165,7 +132,7 @@ impl Database {
         columns: Vec<String>,
         where_clause: Option<&str>,
     ) -> Result<Vec<Vec<String>>, String> {
-        if let Some(table) = self.tables.get(table_name) {
+        if let Some(table) = self.state.tables.get(table_name) {
             let column_indices: Vec<usize> = if columns.len() == 1 && columns[0] == "*" {
                 (0..table.columns.len()).collect()
             } else {
@@ -216,7 +183,7 @@ impl Database {
         let operator = parts[1];
         let value = parts[2];
 
-        if let Some(table) = self.tables.get(table_name) {
+        if let Some(table) = self.state.tables.get(table_name) {
             let column_index = table
                 .columns
                 .iter()
@@ -356,7 +323,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     println!("Listening on 127.0.0.1:8080");
 
-    let db = Arc::new(Mutex::new(Database::new("simple_db.txt")));
+    let db = Arc::new(Mutex::new(Database::new("simple_db.bin")));
 
     loop {
         let (stream, _) = listener.accept().await?;

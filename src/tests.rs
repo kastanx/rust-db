@@ -23,7 +23,7 @@ fn test_e2e_database_operations() {
     let server_thread = thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let db = super::Database::new("test_e2e_db.txt");
+            let db = super::Database::new("test_e2e_db.bin");
             let db = std::sync::Arc::new(std::sync::Mutex::new(db));
             let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")
                 .await
@@ -55,7 +55,7 @@ fn test_e2e_database_operations() {
 
     server_thread.join().unwrap();
 
-    std::fs::remove_file("test_e2e_db.txt").unwrap_or_default();
+    std::fs::remove_file("test_e2e_db.bin").unwrap_or_default();
 }
 
 fn run_database_tests() {
@@ -130,7 +130,7 @@ fn test_performance() {
     println!("Time to select 10000 rows: {:?}", select_all_duration);
 
     let start_time = Instant::now();
-    let _where_response = send_query("SELECT * FROM large_data WHERE id = 10000");
+    let _where_response = send_query("SELECT * FROM large_data WHERE id = 5000");
     let select_where_duration = start_time.elapsed();
     println!(
         "Time to select one row with WHERE clause: {:?}",
