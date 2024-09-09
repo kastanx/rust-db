@@ -1,6 +1,17 @@
-# SimpleDB: A Rust-based In-Memory Database with Persistence
+# RustDB: A Rust-based In-Memory Database with Persistence
 
-SimpleDB is a lightweight, in-memory database implemented in Rust, featuring basic persistence and querying capabilities.
+RustDB is a lightweight, in-memory database implemented in Rust, featuring basic persistence and querying capabilities.
+
+## Motivation
+
+The primary motivation behind RustDB is to gain a deeper understanding of how databases work internally. By building a database from scratch, this project aims to:
+
+1. Explore the core mechanisms of database management systems.
+2. Implement and understand efficient data structures and algorithms for data storage and retrieval.
+3. Gain hands-on experience with query processing and execution.
+4. Understand the trade-offs between in-memory operations and persistent storage.
+
+This project serves as a learning tool for diving into the internals of database systems. By implementing features like B-tree indexing, basic SQL parsing, and data persistence, it provides insights into the fundamental concepts that power larger, more complex database systems. While not intended for production use, RustDB offers a tangible way to grasp database concepts through hands-on implementation in Rust.
 
 ## Features
 
